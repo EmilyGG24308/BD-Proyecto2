@@ -2,12 +2,20 @@ require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
 const mysql   = require('mysql2/promise');
+const session = require('express-session');
+const bcrypt  = require('bcryptjs');
+const { Producto, Cliente, AppUser } = require('./models');
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(session({
+  secret:            process.env.SESSION_SECRET || 'tienda_dev_key',
+  resave:            false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, maxAge: 8 * 60 * 60 * 1000 },
+}));
 
-// Conexión
 const pool = mysql.createPool({
   host:     process.env.DB_HOST,
   user:     process.env.DB_USER,
@@ -17,15 +25,60 @@ const pool = mysql.createPool({
   connectionLimit: 10,
 });
 
-// Health check
+// middleware
+
+
+function requireAuth(req, res, next) {
+  if (!req.session.user)
+    return res.status(401).json({ error: 'No autenticado' });
+  next();
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.session.user)
+      return res.status(401).json({ error: 'No autenticado' });
+    if (!roles.includes(req.session.user.role))
+      return res.status(403).json({ error: 'Acceso denegado para tu rol' });
+    next();
+  };
+}
+
+
+// auth routs
+
+
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password)
+    return res.status(400).json({ error: 'Credenciales requeridas' });
+  try {
+    const user = await AppUser.findOne({ where: { username, activo: 1 } });
+    if (!user)
+      return res.status(401).json({ error: 'Usuario no encontrado' });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid)
+      return res.status(401).json({ error: 'Contraseña incorrecta' });
+    req.session.user = { id: user.id, username: user.username, role: user.role };
+    res.json({ username: user.username, role: user.role });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-// PRODUCTOS — CRUD completo
-// ----------------------------------------------------------------------
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy(() => res.json({ message: 'Sesión cerrada' }));
+});
 
-// Listar productos
-app.get('/api/productos', async (req, res) => {
+app.get('/api/auth/me', (req, res) => {
+  if (!req.session.user)
+    return res.status(401).json({ error: 'No autenticado' });
+  res.json(req.session.user);
+});
+
+// productos
+
+app.get('/api/productos', requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT p.id, p.nombre, p.precio_unitario, p.stock, p.descripcion,
@@ -39,98 +92,109 @@ app.get('/api/productos', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Crear producto
-app.post('/api/productos', async (req, res) => {
+app.post('/api/productos', requireRole('admin','gerente'), async (req, res) => {
   const { categoria_id, proveedor_id, nombre, precio_unitario, stock, descripcion } = req.body;
   if (!nombre || !precio_unitario || stock === undefined)
     return res.status(400).json({ error: 'Faltan campos obligatorios' });
+  const conn = await pool.getConnection();
   try {
-    const [r] = await pool.query(
-      `INSERT INTO producto (categoria_id, proveedor_id, nombre, precio_unitario, stock, descripcion)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [categoria_id, proveedor_id, nombre, precio_unitario, stock, descripcion]
+    await conn.query(
+      'CALL crear_producto(?,?,?,?,?,?,@nid,@err)',
+      [categoria_id, proveedor_id, nombre, precio_unitario, stock, descripcion || '']
     );
-    res.status(201).json({ id: r.insertId, message: 'Producto creado' });
+    const [[out]] = await conn.query('SELECT @nid AS id, @err AS error');
+    if (out.error) return res.status(400).json({ error: out.error });
+    res.status(201).json({ id: out.id, message: 'Producto creado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
 });
 
-// Editar producto
-app.put('/api/productos/:id', async (req, res) => {
+app.put('/api/productos/:id', requireRole('admin','gerente'), async (req, res) => {
   const { nombre, precio_unitario, stock, descripcion, categoria_id, proveedor_id } = req.body;
   try {
-    await pool.query(
-      `UPDATE producto SET nombre=?, precio_unitario=?, stock=?, descripcion=?,
-       categoria_id=?, proveedor_id=? WHERE id=?`,
-      [nombre, precio_unitario, stock, descripcion, categoria_id, proveedor_id, req.params.id]
+    await Producto.update(
+      { nombre, precio_unitario, stock, descripcion, categoria_id, proveedor_id },
+      { where: { id: req.params.id } }
     );
     res.json({ message: 'Producto actualizado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Eliminar producto 
-app.delete('/api/productos/:id', async (req, res) => {
+app.delete('/api/productos/:id', requireRole('admin'), async (req, res) => {
+  const conn = await pool.getConnection();
   try {
-    const [usado] = await pool.query(
-      `SELECT id FROM detalle_venta
-       WHERE producto_id IN (SELECT id FROM producto WHERE id = ?)`,
-      [req.params.id]
-    );
-    if (usado.length > 0)
-      return res.status(400).json({ error: 'No se puede eliminar: tiene ventas asociadas' });
-    await pool.query(`DELETE FROM producto WHERE id = ?`, [req.params.id]);
+    await conn.query('CALL eliminar_producto(?,@err)', [req.params.id]);
+    const [[out]] = await conn.query('SELECT @err AS error');
+    if (out.error) return res.status(400).json({ error: out.error });
     res.json({ message: 'Producto eliminado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
 });
 
-// CLIENTES — CRUD completo
-// -------------------------------------------------------------------
-
-app.get('/api/clientes', async (req, res) => {
+app.patch('/api/productos/:id/stock', requireRole('admin','gerente','bodeguero'), async (req, res) => {
+  const { stock } = req.body;
+  const conn = await pool.getConnection();
   try {
-    const [rows] = await pool.query(`SELECT * FROM cliente ORDER BY apellido, nombre`);
+    await conn.query('CALL actualizar_stock(?,?,@err)', [req.params.id, stock]);
+    const [[out]] = await conn.query('SELECT @err AS error');
+    if (out.error) return res.status(400).json({ error: out.error });
+    res.json({ message: 'Stock actualizado' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
+});
+
+
+// clientes
+
+app.get('/api/clientes', requireAuth, async (req, res) => {
+  try {
+    const rows = await Cliente.findAll({ order: [['apellido','ASC'],['nombre','ASC']] });
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/clientes', async (req, res) => {
+app.post('/api/clientes', requireRole('admin','gerente','cajero'), async (req, res) => {
   const { nombre, apellido, email, telefono } = req.body;
   if (!nombre || !apellido || !email || !telefono)
     return res.status(400).json({ error: 'Todos los campos son obligatorios' });
+  const conn = await pool.getConnection();
   try {
-    const [r] = await pool.query(
-      `INSERT INTO cliente (nombre, apellido, email, telefono) VALUES (?, ?, ?, ?)`,
+    await conn.query(
+      'CALL crear_cliente(?,?,?,?,@nid,@err)',
       [nombre, apellido, email, telefono]
     );
-    res.status(201).json({ id: r.insertId, message: 'Cliente creado' });
+    const [[out]] = await conn.query('SELECT @nid AS id, @err AS error');
+    if (out.error) return res.status(400).json({ error: out.error });
+    res.status(201).json({ id: out.id, message: 'Cliente creado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
 });
 
-app.put('/api/clientes/:id', async (req, res) => {
+app.put('/api/clientes/:id', requireRole('admin','gerente','cajero'), async (req, res) => {
   const { nombre, apellido, email, telefono } = req.body;
   try {
-    await pool.query(
-      `UPDATE cliente SET nombre=?, apellido=?, email=?, telefono=? WHERE id=?`,
-      [nombre, apellido, email, telefono, req.params.id]
+    await Cliente.update(
+      { nombre, apellido, email, telefono },
+      { where: { id: req.params.id } }
     );
     res.json({ message: 'Cliente actualizado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/clientes/:id', async (req, res) => {
+app.delete('/api/clientes/:id', requireRole('admin'), async (req, res) => {
   try {
-    const [v] = await pool.query(`SELECT id FROM venta WHERE cliente_id = ?`, [req.params.id]);
+    const [v] = await pool.query('SELECT id FROM venta WHERE cliente_id = ?', [req.params.id]);
     if (v.length > 0)
       return res.status(400).json({ error: 'No se puede eliminar: cliente tiene ventas' });
-    await pool.query(`DELETE FROM cliente WHERE id = ?`, [req.params.id]);
+    await Cliente.destroy({ where: { id: req.params.id } });
     res.json({ message: 'Cliente eliminado' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 
-// VENTAS — Transacción explícita con ROLLBACK 
-// ---------------------------------------------------------------------
+// ventas y reportes
 
-app.get('/api/ventas', async (req, res) => {
+app.get('/api/ventas', requireRole('admin','gerente','vendedor','cajero'), async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT v.id, v.fecha, v.total,
@@ -145,64 +209,28 @@ app.get('/api/ventas', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/ventas', async (req, res) => {
+app.post('/api/ventas', requireRole('admin','gerente','vendedor'), async (req, res) => {
   const { cliente_id, empleado_id, items } = req.body;
-  if (!cliente_id || !empleado_id || !items || items.length === 0)
+  if (!cliente_id || !empleado_id || !items?.length)
     return res.status(400).json({ error: 'Datos incompletos' });
-
   const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction(); // BEGIN
-
-    let total = 0;
-    const detalles = [];
-
-    for (const item of items) {
-      const [[prod]] = await conn.query(
-        `SELECT id, precio_unitario, stock FROM producto WHERE id = ? FOR UPDATE`,
-        [item.producto_id]
-      );
-      if (!prod)              throw new Error(`Producto ID ${item.producto_id} no existe`);
-      if (prod.stock < item.cantidad) throw new Error(`Stock insuficiente para "${prod.id}"`);
-      total += prod.precio_unitario * item.cantidad;
-      detalles.push({ ...item, precio_unitario: prod.precio_unitario });
-    }
-
-    const [ventaRes] = await conn.query(
-      `INSERT INTO venta (cliente_id, empleado_id, fecha, total) VALUES (?, ?, NOW(), ?)`,
-      [cliente_id, empleado_id, total]
+    await conn.query(
+      'CALL registrar_venta(?,?,?,@vid,@total,@err)',
+      [cliente_id, empleado_id, JSON.stringify(items)]
     );
-    const venta_id = ventaRes.insertId;
-
-    for (const d of detalles) {
-      await conn.query(
-        `INSERT INTO detalle_venta (venta_id, producto_id, cantidad, precio_unitario)
-         VALUES (?, ?, ?, ?)`,
-        [venta_id, d.producto_id, d.cantidad, d.precio_unitario]
-      );
-      await conn.query(
-        `UPDATE producto SET stock = stock - ? WHERE id = ?`,
-        [d.cantidad, d.producto_id]
-      );
-    }
-
-    await conn.commit(); // COMMIT
-    res.status(201).json({ venta_id, total, message: 'Venta registrada' });
-
-  } catch (e) {
-    await conn.rollback(); // ROLLBACK if fails
-    res.status(400).json({ error: e.message });
-  } finally {
-    conn.release();
-  }
+    const [[out]] = await conn.query('SELECT @vid AS venta_id, @total AS total, @err AS error');
+    if (out.error) return res.status(400).json({ error: out.error });
+    res.status(201).json({ venta_id: out.venta_id, total: out.total, message: 'Venta registrada' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { conn.release(); }
 });
 
 
-// REPORTES
-// ----------------------------------------------------------------------
+// reports
 
-// GROUP BY + HAVING 
-app.get('/api/reportes/ventas-por-empleado', async (req, res) => {
+
+app.get('/api/reportes/ventas-por-empleado', requireRole('admin','gerente'), async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT CONCAT(e.nombre,' ',e.apellido) AS empleado,
@@ -219,8 +247,7 @@ app.get('/api/reportes/ventas-por-empleado', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Subquery en FROM 
-app.get('/api/reportes/productos-mas-vendidos', async (req, res) => {
+app.get('/api/reportes/productos-mas-vendidos', requireRole('admin','gerente'), async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT p.nombre AS producto, cat.nombre AS categoria,
@@ -241,17 +268,14 @@ app.get('/api/reportes/productos-mas-vendidos', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// EXISTS 
-app.get('/api/reportes/clientes-frecuentes', async (req, res) => {
+app.get('/api/reportes/clientes-frecuentes', requireRole('admin','gerente'), async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT c.id, c.nombre, c.apellido, c.email,
              COUNT(v.id) AS compras, SUM(v.total) AS total_gastado
       FROM cliente c
       JOIN venta v ON v.cliente_id = c.id
-      WHERE EXISTS (
-        SELECT 1 FROM venta v2 WHERE v2.cliente_id = c.id
-      )
+      WHERE EXISTS (SELECT 1 FROM venta v2 WHERE v2.cliente_id = c.id)
       GROUP BY c.id
       ORDER BY total_gastado DESC
     `);
@@ -259,17 +283,16 @@ app.get('/api/reportes/clientes-frecuentes', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// CTE (WITH) 
-app.get('/api/reportes/ventas-mensuales', async (req, res) => {
+app.get('/api/reportes/ventas-mensuales', requireRole('admin','gerente'), async (req, res) => {
   try {
     const [rows] = await pool.query(`
       WITH ventas_mensuales AS (
-        SELECT DATE_FORMAT(fecha, '%Y-%m') AS mes,
+        SELECT DATE_FORMAT(fecha,'%Y-%m') AS mes,
                COUNT(id)  AS num_ventas,
                SUM(total) AS total_mes,
                AVG(total) AS promedio
         FROM venta
-        GROUP BY DATE_FORMAT(fecha, '%Y-%m')
+        GROUP BY DATE_FORMAT(fecha,'%Y-%m')
       )
       SELECT mes, num_ventas, total_mes, promedio
       FROM ventas_mensuales
@@ -279,36 +302,36 @@ app.get('/api/reportes/ventas-mensuales', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// VIEW 
-app.get('/api/reportes/detalle-ventas', async (req, res) => {
+app.get('/api/reportes/detalle-ventas', requireRole('admin','gerente'), async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT * FROM vista_ventas_detalle ORDER BY fecha DESC LIMIT 50`
+      'SELECT * FROM vista_ventas_detalle ORDER BY fecha DESC LIMIT 50'
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// dts auxiliares
 
-// DATOS AUXILIARES
-// ----------------------------------------------------------------------
-app.get('/api/categorias', async (req, res) => {
-  try { const [r] = await pool.query(`SELECT * FROM categoria`); res.json(r); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.get('/api/proveedores', async (req, res) => {
-  try { const [r] = await pool.query(`SELECT * FROM proveedor`); res.json(r); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.get('/api/empleados', async (req, res) => {
-  try { const [r] = await pool.query(`SELECT * FROM empleado`); res.json(r); }
+
+app.get('/api/categorias', requireAuth, async (req, res) => {
+  try { const [r] = await pool.query('SELECT * FROM categoria'); res.json(r); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Exportar CSV 
-app.get('/api/exportar/ventas-csv', async (req, res) => {
+app.get('/api/proveedores', requireAuth, async (req, res) => {
+  try { const [r] = await pool.query('SELECT * FROM proveedor'); res.json(r); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/empleados', requireAuth, async (req, res) => {
+  try { const [r] = await pool.query('SELECT * FROM empleado'); res.json(r); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/exportar/ventas-csv', requireRole('admin','gerente'), async (req, res) => {
   try {
-    const [rows] = await pool.query(`SELECT * FROM vista_ventas_detalle ORDER BY fecha DESC`);
+    const [rows] = await pool.query('SELECT * FROM vista_ventas_detalle ORDER BY fecha DESC');
     if (!rows.length) return res.send('Sin datos');
     const headers = Object.keys(rows[0]).join(',');
     const csv     = [headers, ...rows.map(r => Object.values(r).join(','))].join('\n');
@@ -318,6 +341,5 @@ app.get('/api/exportar/ventas-csv', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Arrancar 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Backend running en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
