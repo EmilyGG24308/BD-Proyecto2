@@ -117,3 +117,12 @@ INSERT INTO detalle_venta (venta_id,producto_id,cantidad,precio_unitario) VALUES
 (11,1,3,45.00),(11,4,1,120.00),(11,17,1,220.00),
 (12,27,1,180.00),(12,26,1,95.00),(12,29,1,120.00),
 (13,30,2,45.00),(13,18,2,85.00);
+
+
+-- Test users — password for all: "secret"
+INSERT INTO app_user (username, password_hash, role) VALUES
+('admin_user',     '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVdSA/Rfq2', 'admin'),
+('gerente_user',   '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVdSA/Rfq2', 'gerente'),
+('vendedor_user',  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVdSA/Rfq2', 'vendedor'),
+('cajero_user',    '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVdSA/Rfq2', 'cajero'),
+('bodeguero_user', '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LPVdSA/Rfq2', 'bodeguero');
