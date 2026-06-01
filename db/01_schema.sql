@@ -87,3 +87,40 @@ JOIN empleado      e  ON v.empleado_id  = e.id
 JOIN detalle_venta dv ON dv.venta_id    = v.id
 JOIN producto      p  ON dv.producto_id = p.id;
 
+CREATE TABLE IF NOT EXISTS app_user (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    username      VARCHAR(60)  NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    role          ENUM('admin','gerente','vendedor','cajero','bodeguero') NOT NULL,
+    activo        TINYINT(1) NOT NULL DEFAULT 1
+);
+
+CREATE ROLE IF NOT EXISTS 'rol_admin';
+GRANT ALL PRIVILEGES ON tienda_db.* TO 'rol_admin';
+
+CREATE ROLE IF NOT EXISTS 'rol_gerente';
+GRANT SELECT ON tienda_db.*                       TO 'rol_gerente';
+GRANT INSERT, UPDATE ON tienda_db.producto        TO 'rol_gerente';
+GRANT INSERT, UPDATE ON tienda_db.categoria       TO 'rol_gerente';
+GRANT INSERT, UPDATE ON tienda_db.proveedor       TO 'rol_gerente';
+
+CREATE ROLE IF NOT EXISTS 'rol_vendedor';
+GRANT SELECT ON tienda_db.producto                TO 'rol_vendedor';
+GRANT SELECT ON tienda_db.cliente                 TO 'rol_vendedor';
+GRANT SELECT ON tienda_db.empleado                TO 'rol_vendedor';
+GRANT SELECT ON tienda_db.categoria               TO 'rol_vendedor';
+GRANT SELECT, INSERT ON tienda_db.venta           TO 'rol_vendedor';
+GRANT SELECT, INSERT ON tienda_db.detalle_venta   TO 'rol_vendedor';
+
+CREATE ROLE IF NOT EXISTS 'rol_cajero';
+GRANT SELECT ON tienda_db.venta                   TO 'rol_cajero';
+GRANT SELECT ON tienda_db.detalle_venta           TO 'rol_cajero';
+GRANT SELECT ON tienda_db.producto                TO 'rol_cajero';
+GRANT SELECT, INSERT, UPDATE ON tienda_db.cliente TO 'rol_cajero';
+
+CREATE ROLE IF NOT EXISTS 'rol_bodeguero';
+GRANT SELECT, UPDATE ON tienda_db.producto        TO 'rol_bodeguero';
+GRANT SELECT ON tienda_db.categoria               TO 'rol_bodeguero';
+GRANT SELECT ON tienda_db.proveedor               TO 'rol_bodeguero';
+
+FLUSH PRIVILEGES;

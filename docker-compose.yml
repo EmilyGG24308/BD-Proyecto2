@@ -9,16 +9,17 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: tienda_db
-      MYSQL_USER: proy2
+      MYSQL_USER: proy3
       MYSQL_PASSWORD: secret
     volumes:
       - db_data:/var/lib/mysql
       - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
       - ./db/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql
+      - ./db/03_procedures.sql:/docker-entrypoint-initdb.d/03_procedures.sql
     ports:
       - "3306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uproy2", "-psecret"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uproy3", "-psecret"]
       interval: 10s
       timeout: 5s
       retries: 10
