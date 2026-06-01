@@ -1,8 +1,5 @@
-# BD-Proyecto2
-Consiste en diseñar y desarrollar una aplicación web para gestionar el inventario y las ventas de una tienda. 
-
+# BD-Proyecto3
 Emily A. Gongora Giron 
-Seccion 
 #24308
 
 **Como levantar el proyecto**
