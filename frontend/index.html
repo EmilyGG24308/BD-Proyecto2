@@ -209,20 +209,71 @@
   </style>
 </head>
 <body>
+<div id="login-screen" style="
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:center;height:100vh;gap:1rem;background:#fdfafc
+">
+  <h2 style="color:#4a4460;font-size:1.3rem;font-weight:500">Tienda — iniciar sesión</h2>
+  <input id="l-user" type="text"     placeholder="Usuario"
+    style="padding:.6rem 1rem;border:1px solid #ccc;border-radius:6px;width:240px">
+  <input id="l-pass" type="password" placeholder="Contraseña"
+    style="padding:.6rem 1rem;border:1px solid #ccc;border-radius:6px;width:240px">
+  <button id="l-btn"
+    style="padding:.55rem 1.4rem;background:#b8c0ff;border:none;
+           border-radius:6px;cursor:pointer;font-size:.95rem">
+    Entrar
+  </button>
+  <p id="l-err" style="color:#c00;font-size:.85rem;display:none"></p>
+</div>
+
+<div id="app" style="display:none">
 
 <header>
   <div>
     <h1>Sistema de Inventario y Ventas</h1>
     <small>Bases de Datos - Proyecto 2 - Emily Gongora #24308</small>
   </div>
+
+  <span id="user-badge"
+    style="margin-left:auto;font-size:.85rem;color:#6f6a8d">
+  </span>
+
+  <button id="logout-btn"
+    style="margin-left:1rem;padding:.4rem .8rem;border:none;
+           background:#e0e7ff;border-radius:4px;
+           cursor:pointer;font-size:.85rem">
+    Cerrar sesión
+  </button>
 </header>
 
 <nav>
-  <button class="active" onclick="showTab('dashboard',this)"> Dashboard</button>
-  <button onclick="showTab('productos',this)">📦 Productos</button>
-  <button onclick="showTab('clientes',this)"> Clientes</button>
-  <button onclick="showTab('ventas',this)">🛒 Ventas</button>
-  <button onclick="showTab('reportes',this)"> Reportes</button>
+  <button class="active" onclick="showTab('dashboard',this)">
+    Dashboard
+  </button>
+
+  <button
+    data-tab="productos"
+    onclick="showTab('productos',this)">
+    📦 Productos
+  </button>
+
+  <button
+    data-tab="clientes"
+    onclick="showTab('clientes',this)">
+    Clientes
+  </button>
+
+  <button
+    data-tab="ventas"
+    onclick="showTab('ventas',this)">
+    🛒 Ventas
+  </button>
+
+  <button
+    data-tab="reportes" 
+    onclick="showTab('reportes',this)">
+    Reportes
+  </button>
 </nav>
 
 <main>
@@ -253,7 +304,7 @@
         <div class="form-group"><label>Descripción</label><input type="text" id="prod-desc"/></div>
       </div>
       <div style="margin-top:1rem;display:flex;gap:.5rem">
-        <button class="btn btn-primary" onclick="guardarProducto()"> Guardar</button>
+        <button class="btn btn-primary btn-add" onclick="guardarProducto()">
         <button class="btn btn-warning" onclick="limpiarProd()">✖ Cancelar</button>
       </div>
     </div>
@@ -278,7 +329,7 @@
         <div class="form-group"><label>Teléfono *</label><input type="text" id="cli-telefono"/></div>
       </div>
       <div style="margin-top:1rem;display:flex;gap:.5rem">
-        <button class="btn btn-primary" onclick="guardarCliente()">Guardar</button>
+        <button class="btn btn-primary btn-add" onclick="guardarCliente()"></button>
         <button class="btn btn-warning" onclick="limpiarCli()">✖ Cancelar</button>
       </div>
     </div>
@@ -405,7 +456,7 @@ function renderProductos(data) {
         <td><span class="badge ${p.stock > 5 ? 'badge-green' : 'badge-red'}">${p.stock}</span></td>
         <td class="actions">
           <button class="btn btn-warning" onclick="editarProducto(${p.id})">✎ᝰ. Editar</button>
-          <button class="btn btn-danger"  onclick="eliminarProducto(${p.id})">🗑 Eliminar</button>
+          <button class="btn btn-danger btn-delete" onclick="eliminarProducto(${p.id})">
         </td>
       </tr>`).join('')}</tbody>
     </table>`;
@@ -647,5 +698,147 @@ function exportarCSV() { window.open(`${API}/exportar/ventas-csv`, '_blank'); }
 // Cargar dashboard al abrir
 cargarDashboard();
 </script>
+
+</div>
+
+<script>
+let currentUser = null;
+
+const ROLE_TABS = {
+  admin:     ['productos','clientes','ventas','reportes'],
+  gerente:   ['productos','clientes','ventas','reportes'],
+  vendedor:  ['productos','clientes','ventas'],
+  cajero:    ['clientes','ventas'],
+  bodeguero: ['productos'],
+};
+
+async function checkSession() {
+  try {
+    const r = await fetch('/api/auth/me', {
+      credentials: 'include'
+    });
+
+    if (!r.ok) {
+      showLogin();
+      return;
+    }
+
+    currentUser = await r.json();
+
+    applyRoleUI();
+    showApp();
+  } catch {
+    showLogin();
+  }
+}
+
+function showLogin() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+
+function showApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  const badge = document.getElementById('user-badge');
+
+  if (badge) {
+    badge.textContent =
+      currentUser.username +
+      ' (' +
+      currentUser.role +
+      ')';
+  }
+
+  showTab('dashboard');
+}
+
+function applyRoleUI() {
+  const allowed = ROLE_TABS[currentUser.role] || [];
+
+  document
+    .querySelectorAll('nav button[data-tab]')
+    .forEach(btn => {
+      btn.style.display =
+        allowed.includes(btn.dataset.tab)
+          ? ''
+          : 'none';
+    });
+
+  const canEdit =
+    ['admin','gerente']
+      .includes(currentUser.role);
+
+  document
+    .querySelectorAll('.btn-add, .btn-delete')
+    .forEach(btn => {
+      btn.style.display =
+        canEdit ? '' : 'none';
+    });
+}
+
+document
+  .getElementById('l-btn')
+  .addEventListener('click', async () => {
+
+    const username =
+      document
+        .getElementById('l-user')
+        .value
+        .trim();
+
+    const password =
+      document
+        .getElementById('l-pass')
+        .value;
+
+    const errEl =
+      document.getElementById('l-err');
+
+    errEl.style.display = 'none';
+
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        username,
+        password
+      })
+    });
+
+    const data = await r.json();
+
+    if (!r.ok) {
+      errEl.textContent = data.error;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    currentUser = data;
+
+    applyRoleUI();
+    showApp();
+  });
+
+document
+  .getElementById('logout-btn')
+  .addEventListener('click', async () => {
+
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include'
+    });
+
+    currentUser = null;
+    showLogin();
+  });
+
+checkSession();
+</script>
+
 </body>
 </html>
